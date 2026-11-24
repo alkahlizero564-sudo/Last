@@ -71,6 +71,9 @@ textarea { min-height: 90px; resize: vertical; }
 .files .sec { cursor: default; font-family: inherit; color: var(--muted); font-size: 12px; direction: rtl; text-align: right; }
 textarea.code { min-height: 62vh; background: var(--code-bg); color: var(--code-fg); direction: ltr; text-align: left; font-size: 13px;
   line-height: 1.5; tab-size: 2; white-space: pre; border-radius: 12px; }
+.phones { display: flex; gap: 12px; justify-content: center; }
+.workspace.dual { grid-template-columns: 220px minmax(0, 1fr) 760px; }
+@media (max-width: 1500px) { .workspace.dual { grid-template-columns: 220px minmax(0, 1fr); } .workspace.dual .preview-col { grid-column: 1 / -1; } }
 .phone { width: 360px; max-width: 100%; height: 720px; margin: 0 auto; border: 12px solid #15172a; border-radius: 38px; overflow: hidden;
   background: #fff; box-shadow: 0 20px 60px rgba(20, 20, 60, .25); }
 .phone iframe { width: 100%; height: 100%; border: 0; background: #fff; }

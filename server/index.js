@@ -5,7 +5,9 @@ import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { loadSettings, saveSettings, publicSettings, validateSettings } from './settings.js';
 import { listProjects, getProject, saveProject, deleteProject, startJob, getJob } from './store.js';
-import { createProject, editApp, applyBackend, publicBackendConfig, generateApp } from './generator.js';
+import { createProject, editApp, applyBackend, publicBackendConfig, generateApp, applyFirebaseRules, normalizeEvents } from './generator.js';
+import { mergeRules } from './integrations/firebase.js';
+import { hasNotify } from './stacks.js';
 import { pushAndBuild, buildStatus, downloadApk, notifyClient } from './builder.js';
 import { STACKS, assembleApp, configPath, isAllowedPath } from './stacks.js';
 import { PROVIDERS, buildAttempts } from './ai/router.js';
@@ -105,7 +107,10 @@ export function createServer() {
       const all = assembleApp(p, a, cfg);
       generated[a.id] = Object.fromEntries(Object.entries(all).filter(([k]) => !(k in a.files)));
     }
-    res.json({ project: { ...p, backend: { ...p.backend } }, generated, backendConfigError: cfg.error || null, configPaths: Object.fromEntries(p.apps.map((a) => [a.id, configPath(p.stack, p, a)])) });
+    const suggestedFirebaseRules = (hasNotify(p) || p.backend?.type === 'firebase')
+      ? mergeRules({ rules: {} }, { notifications: hasNotify(p), projectSlug: p.backend?.type === 'firebase' ? p.slug : null, projectRules: p.backend?.firebaseRules })
+      : null;
+    res.json({ project: { ...p, backend: { ...p.backend } }, generated, suggestedFirebaseRules, firebaseSecretSet: !!s.firebase.secret, backendConfigError: cfg.error || null, configPaths: Object.fromEntries(p.apps.map((a) => [a.id, configPath(p.stack, p, a)])) });
   }));
 
   app.delete('/api/projects/:id', wrap((req, res) => { deleteProject(req.params.id); res.json({ ok: true }); }));
@@ -149,6 +154,24 @@ export function createServer() {
     const p = mustProject(req.params.id);
     const job = startJob('sql', (log) => applyBackend(p, loadSettings(), log));
     res.json({ jobId: job.id });
+  }));
+
+  app.post('/api/projects/:id/firebase/rules', wrap((req, res) => {
+    const p = mustProject(req.params.id);
+    const job = startJob('firebase-rules', async (log) => {
+      const s = loadSettings();
+      if (!s.firebase.secret) throw new Error('أضف Database secret لـ Firebase في الإعدادات أولاً');
+      await applyFirebaseRules(p, s, log);
+    });
+    res.json({ jobId: job.id });
+  }));
+
+  app.put('/api/projects/:id/notifications', wrap((req, res) => {
+    const p = mustProject(req.params.id);
+    if (!hasNotify(p)) throw new Error('الإشعارات غير مفعّلة لهذا المشروع');
+    p.notifications.events = normalizeEvents(req.body.events, p.apps);
+    saveProject(p);
+    res.json({ events: p.notifications.events });
   }));
 
   // ---------- البناء ----------

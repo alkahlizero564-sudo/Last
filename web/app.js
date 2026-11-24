@@ -6,6 +6,10 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const view = $('#view');
 
+// مُرحِّل إشعارات المعاينة: iframe ← اللوحة ← iframe التطبيق الآخر
+let previewRelay = null;
+window.addEventListener('message', (e) => { if (e.data && e.data.__apkf === 'notify' && previewRelay) previewRelay(e.data); });
+
 let PASSWORD = (() => { try { return sessionStorage.getItem('apkf-pass') || ''; } catch { return ''; } })();
 let META = null;
 
@@ -89,6 +93,7 @@ async function renderProjects() {
 async function renderNew() {
   const { settings } = await api('GET', '/api/settings');
   const st = { stack: 'html', mode: 'single', backendType: 'none' };
+  let backendTouched = false;
   const stackDesc = {
     html: 'صفحات ويب خفيفة تُغلّف بـ Capacitor', react: 'واجهات تفاعلية حديثة + Capacitor', flutter: 'أداء أصلي وتصميم Material 3',
     kotlin: 'تطبيق أندرويد أصلي 100% بـ Compose', python: 'Kivy + Buildozer (بناء أبطأ)',
@@ -112,6 +117,12 @@ async function renderNew() {
       <div class="choice" data-v="supabase"><b>Supabase</b><small>PostgreSQL + Realtime، إنشاء الجداول تلقائياً</small></div>
       <div class="choice" data-v="firebase"><b>Firebase</b><small>Realtime Database</small></div>
     </div>
+      <div id="notify-box" class="hidden" style="margin-top:12px">
+        <label class="row" style="color:inherit;font-size:15px"><input type="checkbox" id="n-notify" checked style="width:auto">
+          🔔 إشعارات فورية بين التطبيقين عبر <b>Firebase</b> (مثل: طلب جديد ← يصل للإدارة، تغيّر الحالة ← يصل للزبون)</label>
+        ${settings.firebase.dbUrl ? `<div class="hint">قاعدة الإشعارات: ${esc(settings.firebase.dbUrl)} ${settings.firebase.secret ? '— القواعد تُطبَّق تلقائياً ✓' : '— أضف Database secret في الإعدادات لتطبيق القواعد تلقائياً'}</div>`
+          : '<div class="warn" style="margin-top:6px">⚠️ أضف رابط Firebase Realtime Database في <a href="#/settings">الإعدادات</a> لتفعيل الإشعارات.</div>'}
+      </div>
       <div id="target-box" class="hidden">
         <label>حساب Supabase المستخدم</label>
         <select id="n-target"><option value="own">حسابي (${esc(settings.supabase.ref || 'غير مضبوط')})</option>
@@ -131,14 +142,24 @@ async function renderNew() {
     box.onclick = (e) => { const c = e.target.closest('.choice'); if (!c) return; st[key] = c.dataset.v; paint(); after?.(); };
     paint();
   };
-  bind('#c-stack', 'stack'); bind('#c-mode', 'mode');
-  bind('#c-backend', 'backendType', () => $('#target-box').classList.toggle('hidden', st.backendType !== 'supabase'));
+  const syncBoxes = () => {
+    $('#target-box').classList.toggle('hidden', st.backendType !== 'supabase');
+    $('#notify-box').classList.toggle('hidden', st.mode !== 'linked');
+  };
+  bind('#c-stack', 'stack');
+  bind('#c-backend', 'backendType', () => { backendTouched = true; syncBoxes(); });
+  // التطبيقان المترابطان: Supabase للبيانات (SQL تلقائي) + Firebase للإشعارات
+  bind('#c-mode', 'mode', () => {
+    if (st.mode === 'linked' && !backendTouched) { st.backendType = 'supabase'; bind('#c-backend', 'backendType', () => { backendTouched = true; syncBoxes(); }); }
+    syncBoxes();
+  });
 
   $('#n-go').onclick = async () => {
     try {
       const body = {
         name: $('#n-name').value.trim(), description: $('#n-desc').value.trim(), ...st,
         target: $('#n-target').value, autoApplySql: $('#n-apply').checked, preferred: $('#n-ai').value || undefined,
+        notifications: st.mode === 'linked' && $('#n-notify').checked,
       };
       if (!body.description) return toast('اكتب وصف التطبيق', true);
       const { jobId } = await api('POST', '/api/projects', body);
@@ -166,6 +187,7 @@ async function renderProject(id) {
       <h1 style="margin:0">${esc(p.name)}</h1>
       <span class="badge">${esc(META.stacks[p.stack]?.label)}</span>
       ${p.backend.type !== 'none' ? `<span class="badge">${esc(p.backend.type)}${p.backend.type === 'supabase' ? (p.backend.applied ? ' ✓ الجداول جاهزة' : ' — SQL لم يُطبَّق') : ''}</span>` : ''}
+      ${p.notifications ? `<span class="badge">🔔 إشعارات Firebase${p.notifications.rulesApplied ? ' ✓' : ''}</span>` : ''}
       <span class="spacer"></span>
       <button class="btn primary" id="b-build">📦 ابنِ APK</button>
       <button class="btn danger sm" id="b-del">حذف</button>
@@ -181,8 +203,13 @@ async function renderProject(id) {
       </div>
       <div class="preview-col">
         <div class="row" style="margin-bottom:8px"><b>👁️ معاينة فورية</b><span class="spacer"></span>
+          ${p.apps.length > 1 ? '<button class="btn sm" id="b-dual">⇆ التطبيقان معاً</button>' : ''}
           <button class="btn sm" id="b-refresh">↻ تحديث</button><button class="btn sm" id="b-open">فتح بنافذة</button></div>
-        <div class="phone"><iframe id="preview" sandbox="allow-scripts allow-forms allow-modals allow-popups"></iframe></div>
+        <div class="phones">
+          <div class="phone"><iframe id="preview" sandbox="allow-scripts allow-forms allow-modals allow-popups"></iframe></div>
+          <div class="phone hidden" id="phone2"><iframe id="preview2" sandbox="allow-scripts allow-forms allow-modals allow-popups"></iframe></div>
+        </div>
+        ${p.notifications ? '<p class="hint">🔔 في المعاينة تنتقل الإشعارات بين التطبيقين مباشرة — شغّل "التطبيقان معاً" وجرّب.</p>' : ''}
         ${META.stacks[p.stack]?.web ? '' : '<p class="hint">المعاينة نسخة ويب مطابقة يولدها الذكاء الاصطناعي؛ التطبيق الحقيقي يُبنى بـ ' + esc(META.stacks[p.stack]?.label) + '.</p>'}
       </div>
     </div>
@@ -193,7 +220,29 @@ async function renderProject(id) {
     <div class="card" id="panel"></div>`;
 
   const iframe = $('#preview');
-  const refreshPreview = () => { iframe.srcdoc = buildPreview(p.stack, allFiles()); };
+  const iframe2 = $('#preview2');
+  const filesOf = (appId) => ({ ...data.generated[appId], ...p.apps.find((a) => a.id === appId).files });
+  const otherApp = () => p.apps.find((a) => a.id !== state.app);
+  const refreshPreview = () => {
+    iframe.dataset.app = state.app;
+    iframe.srcdoc = buildPreview(p.stack, allFiles());
+    if (state.dual && otherApp()) refreshSecond();
+  };
+  const refreshSecond = () => { iframe2.dataset.app = otherApp().id; iframe2.srcdoc = buildPreview(p.stack, filesOf(otherApp().id)); };
+  previewRelay = (msg) => {
+    const target = [iframe, iframe2].find((f) => f.dataset.app === msg.to && !f.closest('.hidden') && document.body.contains(f));
+    const from = p.apps.find((a) => a.id === msg.from)?.name || msg.from;
+    const to = p.apps.find((a) => a.id === msg.to)?.name || msg.to;
+    if (target) target.contentWindow.postMessage({ __apkf: 'deliver', payload: msg.payload }, '*');
+    toast(`🔔 ${from} ← ${to}: ${msg.payload?.title || ''}${target ? '' : ' (شغّل "التطبيقان معاً" لترى الاستلام)'}`);
+  };
+  if ($('#b-dual')) $('#b-dual').onclick = () => {
+    state.dual = !state.dual;
+    $('#phone2').classList.toggle('hidden', !state.dual);
+    $('.workspace').classList.toggle('dual', state.dual);
+    $('#b-dual').classList.toggle('primary', state.dual);
+    if (state.dual) refreshSecond();
+  };
 
   const paintTabs = () => {
     $('#app-tabs').innerHTML = p.apps.map((a) => `<button class="tab ${a.id === state.app ? 'on' : ''}" data-a="${esc(a.id)}">📱 ${esc(a.name)} <small>(${esc(a.role || a.id)})</small></button>`).join('');
@@ -266,17 +315,35 @@ async function renderProject(id) {
       };
     } else if (state.panel === 'backend') {
       const b = p.backend;
-      if (b.type === 'none') { panel.innerHTML = '<p class="muted">هذا المشروع بدون قاعدة بيانات سحابية.</p>'; return; }
-      panel.innerHTML = `
+      const n = p.notifications;
+      const appName = (id) => esc(p.apps.find((a) => a.id === id)?.name || id);
+      const notifyHtml = n ? `
+        <h3 style="margin-top:4px">🔔 الإشعارات بين التطبيقين (Firebase) ${n.rulesApplied ? '<span class="badge ok">القواعد مطبّقة</span>' : '<span class="badge run">القواعد غير مطبّقة</span>'}</h3>
+        <table><tr><th>من</th><th>إلى</th><th>الحدث</th><th>متى</th><th>العنوان</th></tr>
+          ${(n.events || []).map((e) => `<tr><td>${appName(e.from)}</td><td>${appName(e.to)}</td><td><code>${esc(e.event)}</code></td><td>${esc(e.trigger)}</td><td>${esc(e.title)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">لا توجد أحداث</td></tr>'}</table>
+        <p class="hint">لإضافة حدث: اطلب من المساعد مثلاً "أرسل إشعاراً للزبون عند تجهيز الطلب" — سيُضاف للعقد المشترك. المسار في Firebase: <code>notifications/${esc(p.slug)}/&lt;app&gt;</code></p>
+        <div class="row">${data.firebaseSecretSet ? '<button class="btn" id="fb-apply">🔥 تطبيق قواعد Firebase الآن</button>' : '<span class="hint">أضف Database secret في الإعدادات ليطبّق النظام القواعد تلقائياً، أو انسخها يدوياً:</span>'}</div>
+        <details style="margin-top:8px"><summary>قواعد Firebase المقترحة</summary>
+          <textarea class="ltr code" readonly style="min-height:180px">${esc(JSON.stringify(data.suggestedFirebaseRules || {}, null, 2))}</textarea></details>
+        <hr style="border:0;border-top:1px solid var(--line);margin:18px 0">` : '';
+      if (b.type === 'none') {
+        panel.innerHTML = notifyHtml + '<p class="muted">لا توجد قاعدة بيانات سحابية للبيانات (تخزين محلي).</p>';
+        if ($('#fb-apply')) $('#fb-apply').onclick = applyFb;
+        return;
+      }
+      panel.innerHTML = notifyHtml + `
         ${b.type === 'supabase' ? `<h3>SQL — الجداول والصلاحيات ${b.applied ? '<span class="badge ok">مطبّق</span>' : '<span class="badge run">غير مطبّق</span>'}</h3>
           <p class="hint">الحساب: ${b.target === 'own' || !b.target ? 'حسابي' : 'زبون ' + esc(b.target)}. راجع الكود ثم اضغط تطبيق. مفتاح الوصول sbp_ يبقى على الخادم فقط؛ التطبيقات تحصل على المفتاح العام (anon) فقط.</p>
           <textarea id="sql" class="ltr code" style="min-height:260px">${esc(b.sql)}</textarea>
-          <div class="row" style="margin-top:8px"><button class="btn" id="sql-save">💾 حفظ</button><button class="btn primary" id="sql-apply">▶️ تطبيق على Supabase</button></div>`
+          <div class="row" style="margin-top:8px"><button class="btn" id="sql-save">💾 حفظ</button><button class="btn primary" id="sql-apply">▶️ تطبيق على Supabase</button>
+            <span class="hint">يُطبَّق تلقائياً عند الإنشاء، وعند أي تعديل يحتاج جداول/أعمدة جديدة (${(b.migrations || []).length} تحديث حتى الآن). الأخطاء تُصلَح تلقائياً بالذكاء الاصطناعي.</span></div>`
         : `<h3>قواعد أمان Firebase المقترحة</h3><p class="hint">انسخها إلى Firebase Console ← Realtime Database ← Rules.</p>
-          <textarea class="ltr code" readonly style="min-height:200px">${esc(JSON.stringify(b.firebaseRules || {}, null, 2))}</textarea>`}
+          <textarea class="ltr code" readonly style="min-height:200px">${esc(JSON.stringify(data.suggestedFirebaseRules || b.firebaseRules || {}, null, 2))}</textarea>
+          ${!n && data.firebaseSecretSet ? '<button class="btn" id="fb-apply">🔥 تطبيق القواعد</button>' : ''}`}
         <h3 style="margin-top:16px">عقد البيانات بين التطبيقات</h3>
         <textarea id="contract" rows="6">${esc(b.contract)}</textarea>
         <button class="btn sm" id="contract-save" style="margin-top:6px">💾 حفظ العقد</button>`;
+      if ($('#fb-apply')) $('#fb-apply').onclick = applyFb;
       $('#contract-save').onclick = async () => { await api('PUT', `/api/projects/${p.id}/backend`, { contract: $('#contract').value }); p.backend.contract = $('#contract').value; toast('تم الحفظ'); };
       if (b.type === 'supabase') {
         $('#sql-save').onclick = async () => { await api('PUT', `/api/projects/${p.id}/backend`, { sql: $('#sql').value }); p.backend.sql = $('#sql').value; p.backend.applied = false; toast('تم الحفظ'); paintPanel(); };
@@ -303,6 +370,10 @@ async function renderProject(id) {
       panel.innerHTML = `<h3>وصف المشروع</h3><p style="white-space:pre-wrap">${esc(p.description)}</p>
         ${p.apps.map((a) => `<h3>📱 ${esc(a.name)} <small class="muted">(${esc(a.role)})</small></h3><p style="white-space:pre-wrap" class="muted">${esc(a.description)}</p>`).join('')}`;
     }
+  }
+
+  async function applyFb() {
+    try { const { jobId } = await api('POST', `/api/projects/${p.id}/firebase/rules`); await runJob(jobId, '🔥 قواعد Firebase'); await reload(); } catch (e) { toast(e.message, true); }
   }
 
   async function startBuild() {
@@ -363,6 +434,7 @@ async function renderSettings() {
       <fieldset><legend>🔥 Firebase</legend>
         ${f('firebase.dbUrl', 'رابط Realtime Database', s.firebase.dbUrl, 'https://xxxx-default-rtdb.firebaseio.com')}
         ${f('firebase.apiKey', 'Web API Key (اختياري)', s.firebase.apiKey, 'AIza...')}
+        ${f('firebase.secret', 'Database secret (اختياري)', s.firebase.secret, '••••', 'لتطبيق قواعد الإشعارات تلقائياً: Project settings ← Service accounts ← Database secrets')}
         ${test('firebase')}</fieldset>
       <fieldset><legend>🐙 GitHub</legend>
         ${f('github.token', 'مفتاح GitHub (Token)', s.github.token, 'ghp_... / github_pat_...', 'الصلاحيات المطلوبة: repo + workflow')}

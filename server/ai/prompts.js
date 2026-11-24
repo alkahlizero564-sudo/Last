@@ -1,5 +1,5 @@
 // تعليمات الذكاء الاصطناعي: خطة المشروع، توليد كل تطبيق، والتعديل.
-import { configPath, ids, configFile } from '../stacks.js';
+import { configPath, ids, configFile, hasNotify } from '../stacks.js';
 
 const FORMAT = `OUTPUT FORMAT (mandatory). Output every file like this, nothing else between files:
 === FILE: relative/path.ext ===
@@ -41,7 +41,48 @@ const STACK_RULES = {
 - Do NOT write buildozer.spec.`,
 };
 
+const NOTIFY_API = {
+  html: `Load the notifications helper right after config.js: <script src="notify.js"></script> (already exists, do NOT write it). It defines window.Notifier:
+  Notifier.start()  // call once on startup (requests permission + starts listening)
+  Notifier.send(toAppId, title, body, data)  // returns a Promise
+  Notifier.onNotification(function (n) { /* n = {id, from, title, body, data} */ })  // e.g. show badge + reload data`,
+  react: `src/notify.js already exists (do NOT write it): import notifier from './notify.js';
+  notifier.start()  // call once (e.g. in a useEffect in App)
+  notifier.send(toAppId, title, body, data)  // returns a Promise
+  const off = notifier.onNotification((n) => { /* n = {id, from, title, body, data} */ })  // returns unsubscribe`,
+  flutter: `lib/notifier.dart already exists (do NOT write it): import 'notifier.dart';
+  await Notifier.instance.init();  // once, in main() after WidgetsFlutterBinding.ensureInitialized()
+  Notifier.instance.send(toAppId, title, body, {...});
+  Notifier.instance.stream.listen((AppNotification n) { ... });  // n.id, n.from, n.title, n.body, n.data
+  Add flutter_local_notifications: ^17.2.4 and http: ^1.2.2 to pubspec.yaml.`,
+  kotlin: (p, a) => `Notifier.kt already exists in package ${ids(p, a).pkg} (do NOT write it):
+  Notifier.start(this)  // in MainActivity.onCreate
+  Notifier.send(toAppId, title, body, mapOf("key" to value))
+  LaunchedEffect(Unit) { Notifier.events.collect { n: AppNotification -> ... } }  // n.id, n.from, n.title, n.body, n.data (JSONObject)`,
+  python: `notifier.py already exists (do NOT write it): import notifier
+  notifier.start()  # once, in build()
+  notifier.send(to_app_id, title, body, {...})
+  notifier.on_notification(callback)  # callback(n) runs on the UI thread; n = dict(id, from, title, body, data)`,
+};
+
+function notifySection(project, app) {
+  if (!hasNotify(project)) return '';
+  const events = project.notifications.events || [];
+  const out = events.filter((e) => e.from === app.id);
+  const inc = events.filter((e) => e.to === app.id);
+  const api = typeof NOTIFY_API[project.stack] === 'function' ? NOTIFY_API[project.stack](project, app) : NOTIFY_API[project.stack];
+  const fmt = (e) => `- "${e.event}": ${e.trigger || ''} → title "${e.title || ''}", body "${e.body || ''}"${e.data ? `, data ${JSON.stringify(e.data)}` : ''}`;
+  return `
+REAL-TIME NOTIFICATIONS BETWEEN THE APPS (Firebase). App ids: ${project.apps.map((x) => `"${x.id}" = ${x.name}`).join(', ')}.
+${api}
+Data itself lives in the database; notifications only alert the other app (it should then refresh its data).
+${out.length ? `This app MUST SEND:\n${out.map((e) => fmt(e).replace('- ', `- to "${e.to}" `)).join('\n')}` : ''}
+${inc.length ? `This app RECEIVES (handle them: show in-app, update badges, reload the relevant list):\n${inc.map(fmt).join('\n')}` : ''}
+Start the notifier when the app opens. Add a small notifications screen or bell with the recent notifications received this session.`;
+}
+
 const PREVIEW_RULE = `- ALSO write preview/index.html: one self-contained HTML file (inline CSS/JS, mobile viewport) that is a faithful web mock of this app — same screens, layout, colors, texts and navigation, with interactive behavior and realistic sample data — so the user can preview the app before building the APK. If a backend is configured, the mock may call it with fetch using the same public config values.`;
+const PREVIEW_NOTIFY_RULE = `- In preview/index.html, a notifications helper is injected automatically as window.APKF with the same API: APKF.start(), APKF.send(toAppId, title, body, data), APKF.onNotification(fn). Use it so the mock sends/receives the same notifications as the real app.`;
 
 export function backendDescription(project) {
   const b = project.backend || {};
@@ -54,7 +95,7 @@ export function backendDescription(project) {
   return 'Backend: none. Store data locally on the device.';
 }
 
-export function planPrompt({ description, stack, mode, backendType }) {
+export function planPrompt({ description, stack, mode, backendType, notifications = false, slug = 'project' }) {
   const system = `You are a senior mobile software architect. You design small, buildable Android apps. Reply ONLY with a JSON object inside a \`\`\`json fenced block.`;
   const prompt = `User request (may be Arabic):\n"""${description}"""\n
 Target stack: ${stack}. Number of apps: ${mode === 'linked' ? 'TWO apps that are connected through a shared realtime backend (e.g. customer app + admin/driver app)' : 'ONE app'}.
@@ -65,8 +106,9 @@ Return JSON:
   "apps": [ { "id": "short lowercase latin id like user/admin", "name": "display name in the user's language", "role": "who uses it", "description": "detailed feature list and screens" } ],
   "sql": "${backendType === 'supabase' ? 'idempotent PostgreSQL for Supabase: create table if not exists ..., enable row level security, create policies (drop policy if exists first) allowing the anon role what the apps need, and add tables to the supabase_realtime publication inside DO blocks that ignore duplicate_object errors' : 'empty string'}",
   "firebaseRules": ${backendType === 'firebase' ? '{ "rules": { ... } } Realtime Database security rules for this structure' : 'null'},
-  "contract": "precise description of every table/path, field names and types, and how the apps exchange data in realtime"
-}
+  "contract": "precise description of every table/path, field names and types, and how the apps exchange data in realtime"${notifications ? `,
+  "notifications": [ { "from": "<app id>", "to": "<other app id>", "event": "snake_case_event", "trigger": "exactly when it is sent (e.g. after inserting an order)", "title": "notification title in the user's language", "body": "body text, may reference fields like {customer_name}", "data": { "key": "what id/fields to include" } } ]` : ''}
+}${backendType === 'firebase' ? `\nFirebase: put ALL data under the root path "${slug}/" (e.g. ${slug}/orders) and write firebaseRules for that path only.` : ''}${notifications ? `\nNotifications are delivered through Firebase between the apps (separate from the data backend). List every useful event in BOTH directions (e.g. new order → admin, status changed → customer).` : ''}
 Exactly ${mode === 'linked' ? 2 : 1} app(s). Keep the scope realistic for a first version but complete and polished.`;
   return { system, prompt };
 }
@@ -81,9 +123,11 @@ Project: "${project.name}".
 This app: "${app.name}" (id: ${app.id}) — role: ${app.role || '-'}.
 ${others.length ? `It is part of a connected system with: ${others.map((o) => `"${o.name}" (${o.role})`).join(', ')}. Data written by one app must appear in the other in realtime through the shared backend.` : ''}
 ${backendDescription(project)}
+${notifySection(project, app)}
+${hasNotify(project) && !(project.stack === 'html' || project.stack === 'react') ? PREVIEW_NOTIFY_RULE : ''}
 
 The config file ${configPath(project.stack, project, app)} looks like this (do not write it):
-${configFile(project.stack, project, app, { type: project.backend?.type, supabaseUrl: 'https://<ref>.supabase.co', supabaseAnonKey: '<anon key>', firebaseDbUrl: 'https://<db>.firebaseio.com' })}
+${configFile(project.stack, project, app, { type: project.backend?.type, supabaseUrl: 'https://<ref>.supabase.co', supabaseAnonKey: '<anon key>', firebaseDbUrl: 'https://<db>.firebaseio.com', firebaseApiKey: '<web api key>' })}
 
 ${FORMAT}`;
 }
@@ -98,7 +142,22 @@ export function generatePrompt(project, app) {
 export function editPrompt(project, app, instruction) {
   const current = Object.entries(app.files).map(([p, c]) => `=== FILE: ${p} ===\n${c}\n=== END FILE ===`).join('\n');
   return {
-    system: systemFor(project, app) + `\n\nYou are EDITING an existing app. Output ONLY files that you create or change (complete contents). To delete a file output a line: === DELETE: path ===`,
+    system: systemFor(project, app) + `\n\nYou are EDITING an existing app. Output ONLY files that you create or change (complete contents). To delete a file output a line: === DELETE: path ===${project.backend?.type === 'supabase' ? `
+If the change needs new tables/columns/policies, ALSO output idempotent PostgreSQL (alter table ... add column if not exists, create table if not exists, drop policy if exists + create policy, realtime publication inside DO blocks) — it will be applied automatically to Supabase:
+=== SQL ===
+<sql>
+=== END SQL ===` : ''}${hasNotify(project) ? `
+If you add a new notification event, ALSO output it (it will be shared with the other app):
+=== NOTIFICATIONS ===
+[ { "from": "...", "to": "...", "event": "...", "trigger": "...", "title": "...", "body": "..." } ]
+=== END NOTIFICATIONS ===` : ''}`,
     prompt: `Current files:\n${current}\n\nRequested change (may be Arabic):\n"""${instruction}"""`,
+  };
+}
+
+export function sqlRepairPrompt(sql, error) {
+  return {
+    system: 'You are a PostgreSQL / Supabase expert. Fix SQL so it runs successfully and idempotently on Supabase. Reply ONLY with the full corrected SQL inside a ```sql fenced block.',
+    prompt: `This SQL failed on Supabase with the error:\n${error}\n\nSQL:\n${sql}\n\nReturn the complete corrected SQL (same tables, columns and intent). Make every statement idempotent (if not exists / drop policy if exists / DO blocks that ignore duplicate_object for publication changes).`,
   };
 }

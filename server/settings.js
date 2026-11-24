@@ -10,7 +10,7 @@ export const MASK = '••••';
 
 // الحقول السرية التي يجب تقنيعها
 const SECRET_FIELDS = [
-  'supabase.token', 'firebase.apiKey', 'github.token',
+  'supabase.token', 'firebase.apiKey', 'firebase.secret', 'github.token',
   'gemini.keys.0', 'gemini.keys.1', 'gemini.keys.2',
   'claude.key', 'openrouter.key', 'groq.key',
   'gmail.appPassword', 'brevo.key',
@@ -19,7 +19,7 @@ const SECRET_FIELDS = [
 export function defaults(env = process.env) {
   return {
     supabase: { token: env.SUPABASE_ACCESS_TOKEN || '', ref: env.SUPABASE_PROJECT_REF || '' },
-    firebase: { dbUrl: env.FIREBASE_DB_URL || '', apiKey: env.FIREBASE_API_KEY || '' },
+    firebase: { dbUrl: env.FIREBASE_DB_URL || '', apiKey: env.FIREBASE_API_KEY || '', secret: env.FIREBASE_DB_SECRET || '' },
     github: { token: env.GITHUB_TOKEN || '', repo: env.GITHUB_REPO || 'apk-app', private: env.GITHUB_PRIVATE !== 'false' },
     gemini: {
       keys: [env.GEMINI_API_KEY || '', env.GEMINI_API_KEY_2 || '', env.GEMINI_API_KEY_3 || ''],

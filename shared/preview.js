@@ -130,5 +130,7 @@ export function buildPreview(stack, files) {
   if (stack === 'html') return htmlPreview(files, 'www/index.html');
   if (stack === 'react') return reactPreview(files);
   const mock = files['preview/index.html'];
-  return mock ? injectHead(mock, ERROR_OVERLAY) : placeholder('لا توجد معاينة ويب لهذا التطبيق بعد. اطلب من المساعد: "أنشئ معاينة preview/index.html"');
+  // مكتبة الإشعارات (window.APKF) تُحقن في المعاينة المطابقة
+  const notify = files['preview/notify.js'] != null ? `<script data-src="preview/notify.js">\n${escScript(files['preview/notify.js'])}\n</script>` : '';
+  return mock ? injectHead(mock, ERROR_OVERLAY + notify) : placeholder('لا توجد معاينة ويب لهذا التطبيق بعد. اطلب من المساعد: "أنشئ معاينة preview/index.html"');
 }

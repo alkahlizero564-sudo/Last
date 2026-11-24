@@ -2,6 +2,8 @@
 
 const FILE_RE = /^=== FILE: (.+?) ===[ \t]*\r?\n([\s\S]*?)\r?\n=== END FILE ===[ \t]*$/gm;
 const DELETE_RE = /^=== DELETE: (.+?) ===[ \t]*$/gm;
+const SQL_RE = /^=== SQL ===[ \t]*\r?\n([\s\S]*?)\r?\n=== END SQL ===[ \t]*$/m;
+const NOTIF_RE = /^=== NOTIFICATIONS ===[ \t]*\r?\n([\s\S]*?)\r?\n=== END NOTIFICATIONS ===[ \t]*$/m;
 
 // يزيل أسوار ``` إذا لفّ النموذج المحتوى بها
 function unfence(content) {
@@ -29,7 +31,11 @@ export function parseFiles(text) {
     const p = safePath(m[1]);
     if (p) deleted.push(p);
   }
-  return { files, deleted, rejected };
+  const sql = (text.match(SQL_RE)?.[1] || '').trim();
+  let notifications = [];
+  const nm = text.match(NOTIF_RE);
+  if (nm) { try { const v = JSON.parse(unfence(nm[1])); if (Array.isArray(v)) notifications = v; } catch { /* تجاهل */ } }
+  return { files, deleted, rejected, sql: unfence(sql), notifications };
 }
 
 export function parseJson(text) {
@@ -38,4 +44,9 @@ export function parseJson(text) {
   try { return JSON.parse(candidate); } catch (e) {
     throw new Error(`تعذر قراءة رد الخطة كـ JSON: ${e.message}`);
   }
+}
+
+export function parseSql(text) {
+  const m = text.match(/```(?:sql|postgresql|pgsql)?\s*\r?\n([\s\S]*?)\r?\n```/i);
+  return (m ? m[1] : text).trim();
 }
